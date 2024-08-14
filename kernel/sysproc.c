@@ -42,9 +42,20 @@ sys_sbrk(void)
   int n;
 
   argint(0, &n);
+  // addr = myproc()->sz; //lazy changes 
+  // if(growproc(n) < 0)
+  //   return -1;
+
+  //lazy changes 
   addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+  if (n < 0){
+    myproc()->sz = uvmdealloc(myproc()->pagetable, myproc()->sz, myproc()->sz + n);
+  } else {
+    myproc()->sz += n;
+  }
+
+
+
   return addr;
 }
 

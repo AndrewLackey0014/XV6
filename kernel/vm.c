@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -177,10 +179,19 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    // if((pte = walk(pagetable, a, 0)) == 0) //original code
+    //   panic("uvmunmap: walk");
+    // if((*pte & PTE_V) == 0)
+    //   panic("uvmunmap: not mapped");
+    if((pte = walk(pagetable, a, 0)) == 0){
+      //panic("uvmunmap: walk");
+      continue;
+    }
+    if((*pte & PTE_V) == 0){
+      //panic("uvmunmap: not mapped");
+      continue;
+    }
+
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -311,17 +322,27 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    // if((pte = walk(old, i, 0)) == 0) //original code
+    //   panic("uvmcopy: pte should exist");
+    // if((*pte & PTE_V) == 0)
+    //   panic("uvmcopy: page not present");
+     if((pte = walk(old, i, 0)) == 0) {
+      //panic("uvmcopy: pte should exist");
+      continue;
+    }
+    if((*pte & PTE_V) == 0) {
+      // panic("uvmcopy: page not present");
+      continue;
+    }
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("uvmunmap: not a leaf");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
       goto err;
     memmove(mem, (char*)pa, PGSIZE);
     if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+      kfree(mem); 
       goto err;
     }
   }
@@ -332,8 +353,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return -1;
 }
 
-// mark a PTE invalid for user access.
-// used by exec for the user stack guard page.
 void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
@@ -352,12 +371,26 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
-
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      if ( va0 < myproc()->trapframe->sp || va0 >= myproc()->sz) {
+        return -1;
+      } else {
+        pa0 = (uint64) kalloc();
+        if (pa0 == 0) {
+          setkilled(myproc());
+        } else {
+          memset((void *)pa0, 0, PGSIZE);
+          va0 = PGROUNDDOWN(va0);
+          if(mappages(myproc()->pagetable, va0, PGSIZE, pa0, PTE_W|PTE_R|PTE_U) != 0) {
+            kfree((void *)pa0);
+            setkilled(myproc());
+          }
+        }
+      }
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -377,12 +410,26 @@ int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
-
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
+    if(pa0 == 0) {
+      if (va0 < myproc()->trapframe->sp || va0 >= myproc()->sz) {
+        return -1;
+      } else {
+        pa0 = (uint64) kalloc();
+        if (pa0 == 0) {
+          setkilled(myproc());
+        } else {
+          memset((void *)pa0, 0, PGSIZE);
+          va0 = PGROUNDDOWN(va0);
+          if(mappages(myproc()->pagetable, va0, PGSIZE, pa0, PTE_W|PTE_R|PTE_U) != 0) {
+            kfree((void *)pa0);
+            setkilled(myproc());
+          }
+        }
+      }
+    }
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;

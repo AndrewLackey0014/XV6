@@ -33,6 +33,26 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+void lazytrap(){
+  uint64 virtual_address = r_stval();
+  if (virtual_address < myproc()->trapframe->sp || virtual_address > myproc()->sz) {
+    setkilled(myproc());
+  } else {
+    uint64 kallocationval = (uint64) kalloc();
+    if (kallocationval == 0){
+      setkilled(myproc());
+    } else {
+      memset((void *)kallocationval, 0, PGSIZE);
+      virtual_address = PGROUNDDOWN(virtual_address);
+      if(mappages(myproc()->pagetable, virtual_address, PGSIZE, kallocationval, PTE_W|PTE_R|PTE_U) != 0) {
+        kfree((void *)kallocationval);
+        setkilled(myproc());
+      }
+    }
+  }
+}
+
+
 void
 usertrap(void)
 {
@@ -67,7 +87,11 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if (r_scause() == 13 || r_scause() == 15) // page fault
+  {
+    lazytrap();
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
