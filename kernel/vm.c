@@ -71,8 +71,11 @@ kvminithart()
 }
 
 // Return the address of the PTE in page table pagetable
-// that corresponds to virtual address va.  If alloc!=0,
-// create any required page-table pages.
+// that corresponds to virtual address va.
+//
+// walk_level: which level of page table to return the PTE.
+//
+// If alloc!=0, create any required page-table pages.
 //
 // The risc-v Sv39 scheme has three levels of page-table
 // pages. A page-table page contains 512 64-bit PTEs.
@@ -83,12 +86,12 @@ kvminithart()
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
 pte_t *
-walk(pagetable_t pagetable, uint64 va, int alloc)
+walk(pagetable_t pagetable, uint64 va, int walk_level, int alloc)
 {
   if(va >= MAXVA)
     panic("walk");
 
-  for(int level = 2; level > 0; level--) {
+  for(int level = 2; level > walk_level; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
@@ -99,7 +102,14 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
       *pte = PA2PTE(pagetable) | PTE_V;
     }
   }
-  return &pagetable[PX(0, va)];
+  //check for huge page
+  pte_t *pte = &pagetable[PX(walk_level, va)];
+  //printf("PTE_FLAGS(*pte) = %d\n", PTE_FLAGS(*pte));
+  if ((*pte & PTE_V) && (*pte & PTE_PGH)) {
+    //printf("we are in walk for huge");
+    return pte;
+  }
+  return &pagetable[PX(walk_level, va)];
 }
 
 // Look up a virtual address, return the physical address,
@@ -114,7 +124,7 @@ walkaddr(pagetable_t pagetable, uint64 va)
   if(va >= MAXVA)
     return 0;
 
-  pte = walk(pagetable, va, 0);
+  pte = walk(pagetable, va, 0, 0);
   if(pte == 0)
     return 0;
   if((*pte & PTE_V) == 0)
@@ -151,7 +161,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
+    if((pte = walk(pagetable, a, 0, 1)) == 0)
       return -1;
     if(*pte & PTE_V)
       panic("mappages: remap");
@@ -170,6 +180,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 void
 uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
+  //printf("we are in uvmunmap at the top");
   uint64 a;
   pte_t *pte;
 
@@ -177,17 +188,30 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
+    if((pte = walk(pagetable, a, 0, 0)) == 0)
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
       panic("uvmunmap: not mapped");
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
-      uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+    //printf("PTE_FLAGS(*pte) = %d\n", PTE_FLAGS(*pte));
+    if (PTE_FLAGS(*pte) == PTE_PGH){// check for huge page
+      //printf("we made it into the hughe page table check");
+      if(do_free){
+        //printf("we made it to unmap");
+        uint64 pa = PTE2PA(*pte);
+        kfree_huge((void*)pa);
+        a += HUGEPGSIZE - PGSIZE; // advance by 2MiB
+      }
+      *pte = 0;
+    }else{
+      if(do_free){
+        //printf("freeing regular page\n");
+        uint64 pa = PTE2PA(*pte);
+        kfree((void*)pa);
+      }
+      *pte = 0;
     }
-    *pte = 0;
   }
 }
 
@@ -296,6 +320,37 @@ uvmfree(pagetable_t pagetable, uint64 sz)
   freewalk(pagetable);
 }
 
+void
+vmprint_freewalk(pagetable_t p, int pos){
+  if(pos == 0){
+    printf("page table %p\n", p);
+  }
+  for(int i = 0; i < 512; i++){
+    pte_t pte = p[i];
+    uint64 child = PTE2PA(pte);
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      for(int i = 0; i <= pos; i++){
+        printf(" ..");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      vmprint_freewalk((pagetable_t)child, pos + 1);
+      
+    } else if(pte & PTE_V){
+        for(int i = 0; i <= pos; i++){
+          printf(" ..");
+        }
+        printf("%d: pte %p pa %p\n", i, pte, child);
+    }
+  }
+}
+
+void
+vmprint(pagetable_t p){
+  vmprint_freewalk(p, 0);
+}
+
+
+
 // Given a parent process's page table, copy
 // its memory into a child's page table.
 // Copies both the page table and the
@@ -311,7 +366,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+    if((pte = walk(old, i, 0, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
@@ -339,7 +394,7 @@ uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
   
-  pte = walk(pagetable, va, 0);
+  pte = walk(pagetable, va, 0, 0);
   if(pte == 0)
     panic("uvmclear");
   *pte &= ~PTE_U;

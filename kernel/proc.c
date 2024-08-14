@@ -131,6 +131,16 @@ found:
     release(&p->lock);
     return 0;
   }
+  
+  //allocate a usyscall page
+  struct usyscall usyscallVal;
+  if((p->usyscallnum = (uint64)kalloc()) == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  usyscallVal.pid = p->pid;
+  *(struct usyscall *) p->usyscallnum = usyscallVal;
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -158,6 +168,9 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->usyscallnum) 
+    kfree((void*)p->usyscallnum);
+  p->usyscallnum = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -202,6 +215,14 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  //map the usyscall page in read only and user access
+  if(mappages(pagetable, USYSCALL, PGSIZE, p->usyscallnum, PTE_R | PTE_U) < 0) {
+        uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+        uvmunmap(pagetable, TRAPFRAME, 1, 0);
+        uvmfree(pagetable, 0);
+  }
+
+
   return pagetable;
 }
 
@@ -212,6 +233,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);
   uvmfree(pagetable, sz);
 }
 
@@ -451,7 +473,8 @@ scheduler(void)
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-
+    
+    int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
@@ -465,9 +488,19 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+
+        found = 1;
       }
       release(&p->lock);
     }
+#if !defined (LAB_5)
+    if(found == 0) {
+      intr_on();
+      asm volatile("wfi");
+    }
+#else
+    ;
+#endif
   }
 }
 
