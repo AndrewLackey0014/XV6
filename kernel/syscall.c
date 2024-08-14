@@ -7,6 +7,55 @@
 #include "syscall.h"
 #include "defs.h"
 
+// #define SYS_fork    1
+// #define SYS_exit    2
+// #define SYS_wait    3
+// #define SYS_pipe    4
+// #define SYS_read    5
+// #define SYS_kill    6
+// #define SYS_exec    7
+// #define SYS_fstat   8
+// #define SYS_chdir   9
+// #define SYS_dup    10
+// #define SYS_getpid 11
+// #define SYS_sbrk   12
+// #define SYS_sleep  13
+// #define SYS_uptime 14
+// #define SYS_open   15
+// #define SYS_write  16
+// #define SYS_mknod  17
+// #define SYS_unlink 18
+// #define SYS_link   19
+// #define SYS_mkdir  20
+// #define SYS_close  21
+// #define SYS_trace  22
+char sys_call_strs[23][10] = {
+  "fork",
+  "exit",
+  "wait",
+  "pipe",
+  "read",
+  "kill",
+  "exec",
+  "fstat",
+  "chdir",
+  "dup",
+  "getpid",
+  "sbrk",
+  "sleep",
+  "uptime",
+  "open",
+  "write",
+   "mknod",
+  "unlink",
+  "link",
+  "mkdir",
+  "close",
+  "trace",
+  "sysinfo",
+
+};
+
 // Fetch the uint64 at addr from the current process.
 int
 fetchaddr(uint64 addr, uint64 *ip)
@@ -101,6 +150,8 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
+extern uint64 sys_trace(void);
+extern uint64 sys_sysinfo(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -126,19 +177,39 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_trace]   sys_trace,
+[SYS_sysinfo]   sys_sysinfo,
 };
 
 void
 syscall(void)
 {
   int num;
+
+  
   struct proc *p = myproc();
+  
+  //int mask = p->mask;
 
   num = p->trapframe->a7;
+  // char buf[16];
+  // argstr(1, buf, 16);
+  
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
+    // printf("mask: %d\n", mask);
+    // printf("syscall: %d\n", num);
+    // printf("end\n");
+    // printf("\n");
+    if(p->mask > 0){
+      if(p->mask >> num){
+      // if((p->mask > 0) && (mask == num)){ //if mask present and mask in function matches num 
+        printf("%d: syscall %s -> %d\n", p->pid, sys_call_strs[num-1], p->trapframe->a0);
+      }
+    }
+
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);

@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "sysinfo.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -108,7 +109,7 @@ sys_close(void)
 }
 
 uint64
-sys_fstat(void)
+sys_fstat(void) //modify here for sys info
 {
   struct file *f;
   uint64 st; // user pointer to struct stat

@@ -58,6 +58,22 @@ procinit(void)
   }
 }
 
+uint64
+proc_count(void)
+{
+  struct proc *p;
+  int num_of_processes = 0;
+  for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state != UNUSED){
+        num_of_processes++;
+      }
+      release(&p->lock);
+      
+  }
+  return num_of_processes;
+}
+
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
@@ -277,7 +293,7 @@ growproc(int n)
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
 int
-fork(void)
+fork(void)//modify here to add masks to child processes for tracing !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 {
   int i, pid;
   struct proc *np;
@@ -295,6 +311,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->mask = p->mask;
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -451,7 +468,8 @@ scheduler(void)
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-
+    
+    int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
@@ -465,8 +483,14 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+
+        found = 1;
       }
       release(&p->lock);
+    }
+    if(found == 0) {
+      intr_on();
+      asm volatile("wfi");
     }
   }
 }
