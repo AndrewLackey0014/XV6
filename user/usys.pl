@@ -36,3 +36,8 @@ entry("getpid");
 entry("sbrk");
 entry("sleep");
 entry("uptime");
+# alarm 
+entry("sigalarm");
+entry("sigreturn");
+# thread 
+entry("clone");

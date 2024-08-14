@@ -20,3 +20,8 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+//alarm 
+#define SYS_sigalarm 22
+#define SYS_sigreturn 23
+//thread 
+#define SYS_clone 24

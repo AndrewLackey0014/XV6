@@ -107,7 +107,7 @@ allocpid()
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
 static struct proc*
-allocproc(void)
+allocproc(int new_page_table)
 {
   struct proc *p;
 
@@ -124,6 +124,11 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->iscloned = 0;
+
+  p->numTicks = 0;
+  p->interval = 0;
+  p->entranceHandler = 1;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -132,13 +137,23 @@ found:
     return 0;
   }
 
-  // An empty user page table.
-  p->pagetable = proc_pagetable(p);
-  if(p->pagetable == 0){
-    freeproc(p);
-    release(&p->lock);
-    return 0;
+  //Allocate a new empty user page table if specified.
+  if(new_page_table == 1) {
+    p->pagetable = proc_pagetable(p);
+    if(p->pagetable == 0){
+      freeproc(p);
+      release(&p->lock);
+      return 0;
+    }
   }
+
+  // An empty user page table.
+  // p->pagetable = proc_pagetable(p);
+  // if(p->pagetable == 0){
+  //   freeproc(p);
+  //   release(&p->lock);
+  //   return 0;
+  // }
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -158,8 +173,11 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
+  //printf("the pid = %d, the tgid = %d", p->pid, p->tgid);
+  if(p->iscloned == 0){
+    if(p->pagetable)
+      proc_freepagetable(p->pagetable, p->sz);
+  }
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -176,34 +194,106 @@ freeproc(struct proc *p)
 pagetable_t
 proc_pagetable(struct proc *p)
 {
-  pagetable_t pagetable;
+  if(p->iscloned == 0){
+    pagetable_t pagetable;
 
-  // An empty page table.
-  pagetable = uvmcreate();
-  if(pagetable == 0)
-    return 0;
 
-  // map the trampoline code (for system call return)
-  // at the highest user virtual address.
-  // only the supervisor uses it, on the way
-  // to/from user space, so not PTE_U.
-  if(mappages(pagetable, TRAMPOLINE, PGSIZE,
-              (uint64)trampoline, PTE_R | PTE_X) < 0){
-    uvmfree(pagetable, 0);
-    return 0;
+    // An empty page table.
+    pagetable = uvmcreate();
+    if(pagetable == 0)
+      return 0;
+
+
+    // map the trampoline code (for system call return)
+    // at the highest user virtual address.
+    // only the supervisor uses it, on the way
+    // to/from user space, so not PTE_U.
+    if(mappages(pagetable, TRAMPOLINE, PGSIZE,
+                (uint64)trampoline, PTE_R | PTE_X) < 0){
+      uvmfree(pagetable, 0);
+      return 0;
+    }
+
+
+    // map the trapframe page just below the trampoline page, for
+    // trampoline.S.
+    if(mappages(pagetable, TRAPFRAME, PGSIZE,
+                (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+      uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+      uvmfree(pagetable, 0);
+      return 0;
+    }
+
+
+    return pagetable;
+  }else{
+
+
+    pagetable_t pagetable;
+
+
+    // An empty page table.
+    pagetable = uvmcreate();
+    if(pagetable == 0)
+      return 0;
+
+
+    // Allocate and map the trampoline pages.
+    for (int i = 0; i < 16; i++) {
+        void *trampoline_page = kalloc();
+
+
+        //error checking
+        if (trampoline_page == 0) {
+            // Free previously allocated trampoline pages and return.
+            for (int j = 0; j < i; j++) {
+                uvmunmap(pagetable, TRAMPOLINE + j * PGSIZE, 1, 0);
+                kfree((char*)trampoline + j * PGSIZE);
+            }
+            uvmfree(pagetable, 0);
+            return 0;
+        }
+
+
+        if(mappages(pagetable, TRAMPOLINE + i * PGSIZE, PGSIZE,
+                    (uint64)trampoline_page, PTE_R | PTE_X) < 0){
+          //error check
+          // Free previously allocated trampoline pages and return.
+          for (int j = 0; j <= i; j++) {
+              uvmunmap(pagetable, TRAMPOLINE + j * PGSIZE, 1, 0);
+              kfree((char*)trampoline + j * PGSIZE);
+          }
+          uvmfree(pagetable, 0);
+          return 0;
+        }
+    }
+
+
+
+
+    for (int i = 0; i < 16; i++) {
+
+
+        if(mappages(pagetable, TRAPFRAME + i * PGSIZE, PGSIZE, (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+          //error check
+          // Free previously allocated trampoline pages and return.
+          for (int j = 0; j <= i; j++) {
+              uvmunmap(pagetable, TRAPFRAME + j * PGSIZE, 1, 0);
+             
+              // kfree((char*)trampoline + j * PGSIZE);
+          }
+          uvmfree(pagetable, 0);
+          return 0;
+        }
+
+
+    }
+
+    //printf("we made it through proc pagetable\n");
+    return pagetable;
   }
-
-  // map the trapframe page just below the trampoline page, for
-  // trampoline.S.
-  if(mappages(pagetable, TRAPFRAME, PGSIZE,
-              (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
-    uvmunmap(pagetable, TRAMPOLINE, 1, 0);
-    uvmfree(pagetable, 0);
-    return 0;
-  }
-
-  return pagetable;
 }
+
 
 // Free a process's page table, and free the
 // physical memory it refers to.
@@ -234,7 +324,7 @@ userinit(void)
 {
   struct proc *p;
 
-  p = allocproc();
+  p = allocproc(1);
   initproc = p;
   
   // allocate one user page and copy initcode's instructions
@@ -261,17 +351,42 @@ growproc(int n)
 {
   uint64 sz;
   struct proc *p = myproc();
+  if(p->iscloned == 1){
 
-  sz = p->sz;
-  if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
-      return -1;
+
+    sz = p->sz;
+    if(n > 0){
+      if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+        return -1;
+      }
+    } else if(n < 0){
+      sz = uvmdealloc(p->pagetable, sz, sz + n);
     }
-  } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    p->sz = sz;
+
+
+    struct proc *i;
+    for(i = proc; i < &proc[NPROC]; i++) {
+      if(i->tgid == p->tgid){
+       i->sz = p->sz;
+      }
+    }
+ 
+    return 0;
   }
-  p->sz = sz;
-  return 0;
+  else{
+    sz = p->sz;
+    if(n > 0){
+      if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+        return -1;
+      }
+    } else if(n < 0){
+      sz = uvmdealloc(p->pagetable, sz, sz + n);
+    }
+    p->sz = sz;
+    return 0;
+  }
+ 
 }
 
 // Create a new process, copying the parent.
@@ -284,7 +399,7 @@ fork(void)
   struct proc *p = myproc();
 
   // Allocate process.
-  if((np = allocproc()) == 0){
+  if((np = allocproc(1)) == 0){
     return -1;
   }
 
@@ -324,6 +439,81 @@ fork(void)
 
   return pid;
 }
+
+int
+clone(void (*start)(), void* stack_top)
+{
+  int i, pid;
+  struct proc *np;
+  struct proc *p = myproc();
+
+  // Allocate process.
+  if((np = allocproc(0)) == 0){
+    return -1;
+  }
+
+  np->pagetable = p->pagetable; // share parent's page table
+  np->sz = p->sz;
+
+  // copy saved user registers.
+  *(np->trapframe) = *(p->trapframe);
+
+  // set child's stack pointer to stack_top
+  np->trapframe->sp = (uint64) stack_top;
+
+  // Cause clone to return 0 in the child.
+  np->trapframe->a0 = 0;
+  
+  
+  // increment reference counts on open file descriptors.
+  for(i = 0; i < NOFILE; i++)
+    if(p->ofile[i])
+      np->ofile[i] = filedup(p->ofile[i]);
+  np->cwd = idup(p->cwd);
+
+  safestrcpy(np->name, p->name, sizeof(p->name));
+
+  pid = np->pid;
+
+  if(np->iscloned != 1){
+    np->tgid = p->pid;
+    np->iscloned = 1;
+  }
+  else{
+    np->tgid = p->tgid;
+    np->iscloned = 1;
+  }
+  release(&np->lock);
+
+  acquire(&wait_lock);
+  np->parent = p;
+  release(&wait_lock);
+
+  acquire(&np->lock);
+  np->state = RUNNABLE;
+
+  // set child's pc to start function
+  np->trapframe->epc = (uint64) start;
+
+  // Clear saved callee-saved registers
+  np->trapframe->s0 = 0;
+  np->trapframe->s1 = 0;
+  np->trapframe->s2 = 0;
+  np->trapframe->s3 = 0;
+  np->trapframe->s4 = 0;
+  np->trapframe->s5 = 0;
+  np->trapframe->s6 = 0;
+  np->trapframe->s7 = 0;
+  np->trapframe->s8 = 0;
+  np->trapframe->s9 = 0;
+  np->trapframe->s10 = 0;
+  np->trapframe->s11 = 0;
+
+  release(&np->lock);
+
+  return pid;
+}
+
 
 // Pass p's abandoned children to init.
 // Caller must hold wait_lock.
@@ -451,7 +641,8 @@ scheduler(void)
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-
+    
+    int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
@@ -465,9 +656,19 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+
+        found = 1;
       }
       release(&p->lock);
     }
+#if !defined (LAB_FS)
+    if(found == 0) {
+      intr_on();
+      asm volatile("wfi");
+    }
+#else
+    ;
+#endif
   }
 }
 
